@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Python
 __pycache__/
 *.py[cod]
@@ -16,7 +15,6 @@ media/
 venv/
 
 # IDE
-=======
 # API Keys & Credentials
 .env
 *.json  # GCP service account keys
@@ -49,21 +47,18 @@ logs/
 
 # IDE & OS
 .DS_Store
->>>>>>> 23e16df (first commit)
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-<<<<<<< HEAD
 # OS
 .DS_Store
 Thumbs.db
 
 # Claude
 CLAUDE.md
-=======
 # Build artifacts
 build/
 dist/
@@ -71,4 +66,4 @@ dist/
 
 # Documentation (if contains sensitive info)
 /docs/
->>>>>>> 23e16df (first commit)
+.claude/
