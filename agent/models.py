@@ -46,16 +46,21 @@ class AgentMessage(models.Model):
         AGENT = 'agent', 'Agent'
         TOOL_CALL = 'tool_call', 'Tool Call'
         TOOL_RESULT = 'tool_result', 'Tool Result'
+        FIELD_AGENT = 'field_agent', 'Field Agent'
+        ORCHESTRATOR = 'orchestrator', 'Orchestrator'
+        RECOMMENDER = 'recommender', 'Recommender'
+        FINAL_RESPONSE = 'final_response', 'Final Response'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     session = models.ForeignKey(
         AgentSession, on_delete=models.CASCADE, related_name='messages'
     )
-    role = models.CharField(max_length=15, choices=Role.choices)
+    role = models.CharField(max_length=20, choices=Role.choices)
     content = models.TextField()
     tool_name = models.CharField(max_length=100, blank=True, null=True)
     tool_input = models.JSONField(blank=True, null=True)
     tool_output = models.JSONField(blank=True, null=True)
+    duration_ms = models.IntegerField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

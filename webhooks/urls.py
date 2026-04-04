@@ -1,3 +1,7 @@
 from django.urls import path
 
-urlpatterns = []
+from .views import SmsWebhookView
+
+urlpatterns = [
+    path('sms/', SmsWebhookView.as_view(), name='sms-webhook'),
+]

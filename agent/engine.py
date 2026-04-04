@@ -2,11 +2,9 @@ import json
 import time
 from typing import Dict, List, Any, Optional
 from django.conf import settings
-import vertexai
-from vertexai.generative_models import GenerativeModel, Part, Tool
 from .models import Field, AgentSession, AgentMessage, ActionRecommendation
 from .prompts import FIELD_AGENT_PROMPT, ORCHESTRATOR_PROMPT, RECOMMENDER_PROMPT
-import requests
+from tools.services import get_weather, get_crop_health, get_soil_profile
 
 
 class CropAdvisorEngine:
@@ -18,6 +16,9 @@ class CropAdvisorEngine:
     """
 
     def __init__(self):
+        import vertexai
+        from vertexai.generative_models import GenerativeModel, Tool
+
         # Initialize Vertex AI
         vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_REGION)
         self.model = GenerativeModel("gemini-1.5-flash-002")
@@ -217,19 +218,15 @@ class CropAdvisorEngine:
         tool_name = function_call.name
         tool_args = dict(function_call.args)
 
-        # Map tool names to internal API endpoints
-        tool_endpoints = {
-            'get_weather': f"{settings.BASE_URL}/api/v1/tools/weather/",
-            'get_crop_health': f"{settings.BASE_URL}/api/v1/tools/crop-health/",
-            'get_soil_profile': f"{settings.BASE_URL}/api/v1/tools/soil/"
+        tool_functions = {
+            'get_weather': lambda args: get_weather(args['lat'], args['lng']),
+            'get_crop_health': lambda args: get_crop_health(args['field_id']),
+            'get_soil_profile': lambda args: get_soil_profile(args['field_id']),
         }
 
         try:
-            # Call internal tool API
-            if tool_name in tool_endpoints:
-                response = requests.get(tool_endpoints[tool_name], params=tool_args)
-                response.raise_for_status()
-                tool_result = response.json()
+            if tool_name in tool_functions:
+                tool_result = tool_functions[tool_name](tool_args)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
 
