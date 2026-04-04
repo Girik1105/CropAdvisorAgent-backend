@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Python
 __pycache__/
 *.py[cod]
@@ -15,15 +16,59 @@ media/
 venv/
 
 # IDE
+=======
+# API Keys & Credentials
+.env
+*.json  # GCP service account keys
+cropadvisor-492320-5be0a747010c.json
+
+# Virtual Environment
+/myENV/
+venv/
+env/
+
+# Database
+db.sqlite3
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyc
+.Python
+
+# Django
+local_settings.py
+staticfiles/
+media/
+
+# Logs
+*.log
+logs/
+
+# IDE & OS
+.DS_Store
+>>>>>>> 23e16df (first commit)
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
+<<<<<<< HEAD
 # OS
 .DS_Store
 Thumbs.db
 
 # Claude
 CLAUDE.md
+=======
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Documentation (if contains sensitive info)
+/docs/
+>>>>>>> 23e16df (first commit)
