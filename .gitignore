@@ -66,4 +66,5 @@ dist/
 
 # Documentation (if contains sensitive info)
 /docs/
+git add .gitignore
 .claude/

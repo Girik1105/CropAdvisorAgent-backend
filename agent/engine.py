@@ -2,6 +2,10 @@ import json
 import time
 from typing import Dict, List, Any, Optional
 from django.conf import settings
+<<<<<<< HEAD
+=======
+from google import genai
+>>>>>>> 089e137 (bug fixing)
 from .models import Field, AgentSession, AgentMessage, ActionRecommendation
 from .prompts import FIELD_AGENT_PROMPT, ORCHESTRATOR_PROMPT, RECOMMENDER_PROMPT
 from tools.services import get_weather, get_crop_health, get_soil_profile
@@ -16,53 +20,57 @@ class CropAdvisorEngine:
     """
 
     def __init__(self):
+<<<<<<< HEAD
         import vertexai
         from vertexai.generative_models import GenerativeModel, Tool
 
         # Initialize Vertex AI
         vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_REGION)
         self.model = GenerativeModel("gemini-1.5-flash-002")
+=======
+        # Initialize Google Generative AI
+        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        self.model_name = "gemini-2.5-flash-preview-04-17"
+>>>>>>> 089e137 (bug fixing)
 
         # Define available tools for Gemini function calling
         self.tools = [
-            Tool.from_dict({
-                "function_declarations": [
-                    {
-                        "name": "get_weather",
-                        "description": "Get current weather and 7-day precipitation forecast for a location.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "lat": {"type": "number", "description": "Latitude"},
-                                "lng": {"type": "number", "description": "Longitude"}
-                            },
-                            "required": ["lat", "lng"]
-                        }
-                    },
-                    {
-                        "name": "get_crop_health",
-                        "description": "Get NDVI vegetation health score and stress level for a registered field.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "field_id": {"type": "string", "description": "UUID of the registered field"}
-                            },
-                            "required": ["field_id"]
-                        }
-                    },
-                    {
-                        "name": "get_soil_profile",
-                        "description": "Get USDA soil type, pH, drainage, and water-holding capacity for a field.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "field_id": {"type": "string", "description": "UUID of the registered field"}
-                            },
-                            "required": ["field_id"]
-                        }
-                    }
-                ]
-            })
+            genai.types.Tool(function_declarations=[
+                genai.types.FunctionDeclaration(
+                    name="get_weather",
+                    description="Get current weather and 7-day precipitation forecast for a location.",
+                    parameters=genai.types.Schema(
+                        type="OBJECT",
+                        properties={
+                            "lat": genai.types.Schema(type="NUMBER"),
+                            "lng": genai.types.Schema(type="NUMBER"),
+                        },
+                        required=["lat", "lng"]
+                    )
+                ),
+                genai.types.FunctionDeclaration(
+                    name="get_crop_health",
+                    description="Get NDVI vegetation health score for a field.",
+                    parameters=genai.types.Schema(
+                        type="OBJECT",
+                        properties={
+                            "field_id": genai.types.Schema(type="STRING"),
+                        },
+                        required=["field_id"]
+                    )
+                ),
+                genai.types.FunctionDeclaration(
+                    name="get_soil_profile",
+                    description="Get USDA soil profile for a field.",
+                    parameters=genai.types.Schema(
+                        type="OBJECT",
+                        properties={
+                            "field_id": genai.types.Schema(type="STRING"),
+                        },
+                        required=["field_id"]
+                    )
+                ),
+            ])
         ]
 
     def run(self, field_id: str, user_message: str, session_id: str) -> Dict[str, Any]:
@@ -104,7 +112,7 @@ class CropAdvisorEngine:
 
             # 5. Generate final response
             response_text = self._format_final_response(recommendation)
-            self._save_message(session, 'final_response', response_text)
+            self._save_message(session, 'agent', response_text)
 
             total_time = int((time.time() - start_time) * 1000)
 
@@ -123,7 +131,7 @@ class CropAdvisorEngine:
 
         except Exception as e:
             error_msg = f"Agent processing failed: {str(e)}"
-            self._save_message(session, 'final_response', error_msg)
+            self._save_message(session, 'agent', error_msg)
             raise
 
     def _field_agent(self, field: Field, session: AgentSession) -> Dict[str, Any]:
@@ -141,8 +149,11 @@ class CropAdvisorEngine:
         )
 
         # Call Gemini with tools
-        chat = self.model.start_chat()
-        response = chat.send_message(prompt, tools=self.tools)
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=prompt,
+            config={"tools": self.tools}
+        )
 
         # Process function calls
         tool_data = {}
@@ -152,15 +163,17 @@ class CropAdvisorEngine:
                 tool_data[part.function_call.name] = tool_result
 
         # Get final field context from agent
-        final_response = chat.send_message("Based on the tool results, provide a JSON summary of the field context.")
+        final_response = self.client.models.generate_content(
+            model=self.model_name,
+            contents="Based on the tool results, provide a JSON summary of the field context."
+        )
 
         duration = int((time.time() - start_time) * 1000)
         field_context = self._parse_agent_response(final_response.text)
 
         self._save_message(
-            session, 'field_agent',
-            json.dumps(field_context),
-            duration_ms=duration
+            session, 'agent',
+            json.dumps(field_context)
         )
 
         return field_context
@@ -176,14 +189,13 @@ class CropAdvisorEngine:
             field_context=json.dumps(field_context, indent=2)
         )
 
-        response = self.model.generate_content(prompt)
+        response = self.client.models.generate_content(model=self.model_name, contents=prompt)
         plan = self._parse_agent_response(response.text)
 
         duration = int((time.time() - start_time) * 1000)
         self._save_message(
-            session, 'orchestrator',
-            json.dumps(plan),
-            duration_ms=duration
+            session, 'agent',
+            json.dumps(plan)
         )
 
         return plan
@@ -200,14 +212,13 @@ class CropAdvisorEngine:
             user_message=user_message
         )
 
-        response = self.model.generate_content(prompt)
+        response = self.client.models.generate_content(model=self.model_name, contents=prompt)
         recommendation = self._parse_agent_response(response.text)
 
         duration = int((time.time() - start_time) * 1000)
         self._save_message(
-            session, 'recommender',
-            json.dumps(recommendation),
-            duration_ms=duration
+            session, 'agent',
+            json.dumps(recommendation)
         )
 
         return recommendation
@@ -238,8 +249,7 @@ class CropAdvisorEngine:
                 f"Called {tool_name} with {tool_args}",
                 tool_name=tool_name,
                 tool_input=tool_args,
-                tool_output=tool_result,
-                duration_ms=duration
+                tool_output=tool_result
             )
 
             return tool_result
@@ -253,15 +263,14 @@ class CropAdvisorEngine:
                 f"Tool {tool_name} failed: {str(e)}",
                 tool_name=tool_name,
                 tool_input=tool_args,
-                tool_output=error_result,
-                duration_ms=duration
+                tool_output=error_result
             )
 
             return error_result
 
     def _save_message(self, session: AgentSession, role: str, content: str,
                      tool_name: str = None, tool_input: Dict = None,
-                     tool_output: Dict = None, duration_ms: int = None):
+                     tool_output: Dict = None):
         """Save a message to the database."""
         AgentMessage.objects.create(
             session=session,
@@ -269,8 +278,7 @@ class CropAdvisorEngine:
             content=content,
             tool_name=tool_name or '',
             tool_input=tool_input,
-            tool_output=tool_output,
-            duration_ms=duration_ms
+            tool_output=tool_output
         )
 
     def _save_recommendation(self, session: AgentSession, field: Field, recommendation: Dict) -> ActionRecommendation:
