@@ -2,12 +2,7 @@ Django==5.2.12
 djangorestframework==3.17.1
 djangorestframework-simplejwt==5.5.0
 django-cors-headers==4.7.0
-<<<<<<< HEAD
-google-generativeai==0.8.6
-# google-cloud-aiplatform>=1.38.0  # Needed for engine.py (vertexai) — install when GCP is configured
-=======
 google-genai
->>>>>>> 089e137 (bug fixing)
 twilio==9.10.4
 requests==2.33.1
 python-dotenv==1.2.2

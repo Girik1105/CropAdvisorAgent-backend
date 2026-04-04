@@ -1,9 +1,9 @@
 from django.urls import path
-from . import views
 
-from .views import AgentMessageView, AgentTraceView
+from .views import AgentMessageView, AgentTraceView, run_agent
 
 urlpatterns = [
+    path('run/', run_agent, name='run-agent'),
     path('message/', AgentMessageView.as_view(), name='agent-message'),
     path('trace/<uuid:session_id>/', AgentTraceView.as_view(), name='agent-trace'),
 ]
