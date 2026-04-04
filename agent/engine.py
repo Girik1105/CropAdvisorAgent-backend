@@ -2,10 +2,7 @@ import json
 import time
 from typing import Dict, List, Any, Optional
 from django.conf import settings
-<<<<<<< HEAD
-=======
 from google import genai
->>>>>>> 089e137 (bug fixing)
 from .models import Field, AgentSession, AgentMessage, ActionRecommendation
 from .prompts import FIELD_AGENT_PROMPT, ORCHESTRATOR_PROMPT, RECOMMENDER_PROMPT
 from tools.services import get_weather, get_crop_health, get_soil_profile
@@ -20,18 +17,9 @@ class CropAdvisorEngine:
     """
 
     def __init__(self):
-<<<<<<< HEAD
-        import vertexai
-        from vertexai.generative_models import GenerativeModel, Tool
-
-        # Initialize Vertex AI
-        vertexai.init(project=settings.GCP_PROJECT_ID, location=settings.GCP_REGION)
-        self.model = GenerativeModel("gemini-1.5-flash-002")
-=======
         # Initialize Google Generative AI
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
         self.model_name = "gemini-2.5-flash-preview-04-17"
->>>>>>> 089e137 (bug fixing)
 
         # Define available tools for Gemini function calling
         self.tools = [
