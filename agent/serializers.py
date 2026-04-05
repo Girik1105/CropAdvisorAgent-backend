@@ -73,13 +73,36 @@ class ActionRecommendationSerializer(serializers.ModelSerializer):
 
 class AgentSessionSerializer(serializers.ModelSerializer):
     field_name = serializers.CharField(source='field.name', read_only=True)
+    crop_type = serializers.CharField(source='field.crop_type', read_only=True)
+    message = serializers.SerializerMethodField()
+    status = serializers.CharField(read_only=True)
+    recommendation_action = serializers.SerializerMethodField()
+    recommendation_urgency = serializers.SerializerMethodField()
+    tool_count = serializers.SerializerMethodField()
 
     class Meta:
         model = AgentSession
         fields = [
-            'id', 'phone_number', 'field', 'field_name',
-            'channel', 'created_at', 'updated_at',
+            'id', 'phone_number', 'field', 'field_name', 'crop_type',
+            'channel', 'status', 'message',
+            'recommendation_action', 'recommendation_urgency', 'tool_count',
+            'created_at', 'updated_at',
         ]
+
+    def get_message(self, obj):
+        msg = obj.messages.filter(role='user').first()
+        return msg.content[:120] if msg else None
+
+    def get_recommendation_action(self, obj):
+        rec = obj.recommendations.first()
+        return rec.action_type if rec else None
+
+    def get_recommendation_urgency(self, obj):
+        rec = obj.recommendations.first()
+        return rec.urgency if rec else None
+
+    def get_tool_count(self, obj):
+        return obj.messages.filter(role='tool_call').count()
 
 
 class TraceSerializer(serializers.Serializer):

@@ -16,6 +16,7 @@ class SignupView(generics.CreateAPIView):
         user = serializer.save()
         refresh = RefreshToken.for_user(user)
         return Response({
+            'username': user.username,
             'refresh': str(refresh),
             'access': str(refresh.access_token),
         }, status=status.HTTP_201_CREATED)

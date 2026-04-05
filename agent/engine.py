@@ -1,41 +1,40 @@
 import json
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any
 from django.conf import settings
 from google import genai
+from google.genai import errors as genai_errors
 from .models import Field, AgentSession, AgentMessage, ActionRecommendation
-from .prompts import FIELD_AGENT_PROMPT, ORCHESTRATOR_PROMPT, RECOMMENDER_PROMPT
-from tools.services import get_weather, get_crop_health, get_soil_profile
+from .prompts import (
+    FIELD_AGENT_PROMPT, ORCHESTRATOR_PROMPT, RECOMMENDER_PROMPT,
+    INTENT_CLASSIFIER_PROMPT, GENERAL_QA_PROMPT, CHAT_PROMPT,
+)
+from tools.services import (
+    get_weather, get_crop_health, get_soil_profile,
+    get_market_prices, get_pest_risk, get_water_usage, get_growth_stage,
+)
 
 
 class CropAdvisorEngine:
     """
     Multi-agent system orchestrator for crop advisory recommendations.
 
-    Flow: Field Agent → Orchestrator → Recommender → Final Response
-    Each "agent" is a Gemini API call with specialized system prompt.
+    Flow:
+      user msg → _classify_intent()
+        ├─ "action_needed"    → Field Agent → Orchestrator → Recommender → Response
+        └─ "general_question" → General QA Agent → Response
     """
 
     def __init__(self):
-        # Initialize Google Generative AI
         self.client = genai.Client(api_key=settings.GEMINI_API_KEY, http_options={"api_version": "v1"})
         self.model_name = "gemini-2.5-flash"
 
     def run(self, field_id: str, user_message: str, session_id: str) -> Dict[str, Any]:
         """
-        Main orchestration loop for multi-agent processing.
-
-        Args:
-            field_id: UUID of the field being queried
-            user_message: Farmer's input message
-            session_id: Active session UUID
-
-        Returns:
-            Dict with final recommendation, cost estimate, and reasoning trace
+        Main orchestration loop with intent-based routing.
         """
         start_time = time.time()
 
-        # Get field context
         try:
             field = Field.objects.get(id=field_id)
             session = AgentSession.objects.get(id=session_id)
@@ -46,19 +45,20 @@ class CropAdvisorEngine:
         self._save_message(session, 'user', user_message)
 
         try:
-            # 1. Field Agent — gathers data autonomously
+            # Full health check pipeline — always runs all 7 tools
+            # 1. Field Agent — gathers all data
             field_context = self._field_agent(field, session)
 
-            # 2. Orchestrator — decides what analysis is needed
+            # 2. Orchestrator — creates action plan
             plan = self._orchestrator_agent(field_context, user_message, session)
 
-            # 3. Recommender — generates final action with cost estimates
+            # 3. Recommender — costed recommendation
             recommendation = self._recommender_agent(plan, field_context, user_message, session)
 
-            # 4. Save structured recommendation to DB
+            # 4. Save structured recommendation
             action_rec = self._save_recommendation(session, field, recommendation)
 
-            # 5. Generate final response
+            # 5. Final response
             response_text = self._format_final_response(recommendation)
             self._save_message(session, 'agent', response_text)
 
@@ -72,9 +72,9 @@ class CropAdvisorEngine:
                     "urgency": action_rec.urgency,
                     "description": action_rec.description,
                     "estimated_cost": float(action_rec.estimated_cost),
-                    "risk_if_delayed": action_rec.risk_if_delayed
+                    "risk_if_delayed": action_rec.risk_if_delayed,
                 },
-                "total_duration_ms": total_time
+                "total_duration_ms": total_time,
             }
 
         except Exception as e:
@@ -82,32 +82,266 @@ class CropAdvisorEngine:
             self._save_message(session, 'agent', error_msg)
             raise
 
-    def _field_agent(self, field: Field, session: AgentSession) -> Dict[str, Any]:
-        """
-        Field Agent: Autonomously gathers weather, crop health, and soil data.
-        Passes field and session so data is saved to WeatherSnapshot, CropHealthRecord, SoilProfile.
-        """
-        from tools.services import get_weather, get_crop_health, get_soil_profile
+    # ─── Chat (lightweight, no tool calls) ───
 
-        weather = get_weather(field.lat, field.lng, field=field, session=session)
-        crop_health = get_crop_health(str(field.id), field=field)
-        soil = get_soil_profile(str(field.id), field=field)
+    def chat(self, field_id: str, user_message: str, session_id: str) -> Dict[str, Any]:
+        """
+        Lightweight chat — answers questions using existing DB data, no new tool calls.
+        Single Gemini call with field context from database.
+        """
+        from .models import (
+            WeatherSnapshot, CropHealthRecord, SoilProfile,
+            MarketSnapshot, PestRiskAssessment, WaterUsageEstimate,
+        )
 
-        field_context = {
-            "field_name": field.name,
-            "crop_type": field.crop_type,
-            "weather": weather,
-            "crop_health": crop_health,
-            "soil": soil
+        start_time = time.time()
+
+        field = Field.objects.get(id=field_id)
+        session = AgentSession.objects.get(id=session_id)
+
+        self._save_message(session, 'user', user_message)
+
+        # Build context from latest DB records (no API calls)
+        field_data = {}
+
+        weather = WeatherSnapshot.objects.filter(field=field).first()
+        if weather:
+            field_data["weather"] = {
+                "temp_f": weather.temp_f, "humidity_pct": weather.humidity_pct,
+                "wind_mph": weather.wind_mph, "conditions": weather.conditions,
+                "uv_index": weather.uv_index, "updated": str(weather.created_at),
+            }
+
+        crop = CropHealthRecord.objects.filter(field=field).first()
+        if crop:
+            field_data["crop_health"] = {
+                "ndvi_score": crop.ndvi_score, "stress_level": crop.stress_level,
+                "vegetation_trend": crop.vegetation_trend,
+                "vegetation_fraction": crop.vegetation_fraction,
+            }
+
+        try:
+            soil = field.soil_profile
+            field_data["soil"] = {
+                "soil_type": soil.soil_type, "ph": soil.ph,
+                "organic_matter_pct": soil.organic_matter_pct,
+                "drainage_class": soil.drainage_class,
+                "water_holding_capacity": soil.water_holding_capacity,
+            }
+        except SoilProfile.DoesNotExist:
+            pass
+
+        market = MarketSnapshot.objects.filter(field=field).first()
+        if market:
+            field_data["market"] = {
+                "price_per_unit": market.price_per_unit, "unit": market.unit,
+                "trend_30d": market.trend_30d,
+            }
+
+        pest = PestRiskAssessment.objects.filter(field=field).first()
+        if pest:
+            field_data["pest_risk"] = {
+                "risk_level": pest.risk_level,
+                "threats": pest.primary_threats,
+            }
+
+        water = WaterUsageEstimate.objects.filter(field=field).first()
+        if water:
+            field_data["water_usage"] = {
+                "daily_need_gal": water.daily_need_gal,
+                "deficit_pct": water.deficit_pct,
+                "recommendation": water.recommendation,
+            }
+
+        prompt = CHAT_PROMPT.format(
+            user_message=user_message,
+            field_name=field.name,
+            crop_type=field.crop_type,
+            area_acres=field.area_acres,
+            lat=field.lat,
+            lng=field.lng,
+            field_data_json=json.dumps(field_data, indent=2) if field_data else "No data yet — run a Health Check first.",
+        )
+
+        try:
+            response_text = self._gemini_call(prompt).strip()
+        except Exception as e:
+            response_text = f"Sorry, I couldn't process that right now. Error: {str(e)}"
+
+        self._save_message(session, 'agent', response_text)
+
+        total_time = int((time.time() - start_time) * 1000)
+        return {
+            "session_id": str(session_id),
+            "response": response_text,
+            "total_duration_ms": total_time,
         }
 
-        self._save_message(session, 'agent', json.dumps(field_context))
-        return field_context
+    # ─── Intent Classification ───
+
+    def _classify_intent(self, user_message: str) -> str:
+        """Quick Gemini call to classify the user's intent."""
+        prompt = INTENT_CLASSIFIER_PROMPT.format(user_message=user_message)
+        try:
+            result = self._gemini_call(prompt).strip().lower()
+            if "general" in result:
+                return "general_question"
+            return "action_needed"
+        except Exception:
+            return "action_needed"  # default to full pipeline
+
+    # ─── General QA Agent ───
+
+    def _general_qa_agent(self, user_message: str, field: Field, session: AgentSession) -> str:
+        """
+        Answer general agricultural questions without the full tool pipeline.
+        Still has basic field context for personalization.
+        """
+        field_context_section = (
+            f"FIELD CONTEXT (for personalization):\n"
+            f"- Field: {field.name}\n"
+            f"- Crop: {field.crop_type}\n"
+            f"- Location: {field.lat}, {field.lng}\n"
+            f"- Soil type: {field.soil_type}\n"
+            f"- Area: {field.area_acres} acres"
+        )
+
+        prompt = GENERAL_QA_PROMPT.format(
+            user_message=user_message,
+            field_context_section=field_context_section,
+        )
+
+        self._save_message(
+            session, 'tool_call',
+            'Routed to General QA Agent (no field-specific tools needed)',
+            tool_name='intent_classifier',
+            tool_input={'message': user_message},
+            tool_output={'intent': 'general_question'},
+            duration_ms=0,
+        )
+
+        return self._gemini_call(prompt).strip()
+
+    # ─── Field Agent (7 tools) ───
+
+    def _field_agent(self, field: Field, session: AgentSession) -> Dict[str, Any]:
+        """
+        Field Agent: Autonomously gathers weather, crop health, soil, market,
+        pest risk, water usage, and growth stage data.
+        """
+        # 1. Weather
+        start = time.time()
+        weather = get_weather(field.lat, field.lng, field=field, session=session)
+        self._save_message(
+            session, 'tool_call',
+            f"Called get_weather with lat={field.lat}, lng={field.lng}",
+            tool_name='get_weather',
+            tool_input={'lat': field.lat, 'lng': field.lng},
+            tool_output=weather,
+            duration_ms=int((time.time() - start) * 1000),
+        )
+
+        # 2. Crop Health
+        start = time.time()
+        crop_health = get_crop_health(str(field.id), field=field)
+        self._save_message(
+            session, 'tool_call',
+            f"Called get_crop_health with field_id={field.id}",
+            tool_name='get_crop_health',
+            tool_input={'field_id': str(field.id)},
+            tool_output=crop_health,
+            duration_ms=int((time.time() - start) * 1000),
+        )
+
+        # 3. Soil Profile
+        start = time.time()
+        soil = get_soil_profile(str(field.id), field=field)
+        self._save_message(
+            session, 'tool_call',
+            f"Called get_soil_profile with field_id={field.id}",
+            tool_name='get_soil_profile',
+            tool_input={'field_id': str(field.id)},
+            tool_output=soil,
+            duration_ms=int((time.time() - start) * 1000),
+        )
+
+        # 4. Market Prices
+        start = time.time()
+        market = get_market_prices(field.crop_type, field=field, session=session)
+        self._save_message(
+            session, 'tool_call',
+            f"Called get_market_prices with crop_type={field.crop_type}",
+            tool_name='get_market_prices',
+            tool_input={'crop_type': field.crop_type},
+            tool_output=market,
+            duration_ms=int((time.time() - start) * 1000),
+        )
+
+        # 5. Pest Risk (uses weather data already fetched)
+        start = time.time()
+        pest_risk = get_pest_risk(
+            field.crop_type,
+            weather.get('temp_f', 90),
+            weather.get('humidity_pct', 30),
+            field=field,
+            session=session,
+        )
+        self._save_message(
+            session, 'tool_call',
+            f"Called get_pest_risk with crop={field.crop_type}, temp={weather.get('temp_f')}°F, humidity={weather.get('humidity_pct')}%",
+            tool_name='get_pest_risk',
+            tool_input={'crop_type': field.crop_type, 'temp_f': weather.get('temp_f'), 'humidity_pct': weather.get('humidity_pct')},
+            tool_output=pest_risk,
+            duration_ms=int((time.time() - start) * 1000),
+        )
+
+        # 6. Water Usage (uses weather + soil data)
+        start = time.time()
+        water = get_water_usage(
+            str(field.id),
+            field=field,
+            session=session,
+            weather_data=weather,
+            soil_data=soil,
+        )
+        self._save_message(
+            session, 'tool_call',
+            f"Called get_water_usage with field_id={field.id}",
+            tool_name='get_water_usage',
+            tool_input={'field_id': str(field.id)},
+            tool_output=water,
+            duration_ms=int((time.time() - start) * 1000),
+        )
+
+        # 7. Growth Stage
+        start = time.time()
+        growth = get_growth_stage(field.crop_type)
+        self._save_message(
+            session, 'tool_call',
+            f"Called get_growth_stage with crop_type={field.crop_type}",
+            tool_name='get_growth_stage',
+            tool_input={'crop_type': field.crop_type},
+            tool_output=growth,
+            duration_ms=int((time.time() - start) * 1000),
+        )
+
+        return {
+            "field_name": field.name,
+            "crop_type": field.crop_type,
+            "area_acres": field.area_acres,
+            "weather": weather,
+            "crop_health": crop_health,
+            "soil": soil,
+            "market_prices": market,
+            "pest_risk": pest_risk,
+            "water_usage": water,
+            "growth_stage": growth,
+        }
+
+    # ─── Orchestrator & Recommender ───
 
     def _orchestrator_agent(self, field_context: Dict, user_message: str, session: AgentSession) -> Dict[str, Any]:
-        """
-        Orchestrator Agent: Analyzes field data and user intent to create action plan.
-        """
+        """Orchestrator Agent: Analyzes field data and creates action plan."""
         start_time = time.time()
 
         prompt = ORCHESTRATOR_PROMPT.format(
@@ -115,21 +349,13 @@ class CropAdvisorEngine:
             field_context=json.dumps(field_context, indent=2)
         )
 
-        response = self.client.models.generate_content(model=self.model_name, contents=prompt)
-        plan = self._parse_agent_response(response.text)
+        plan = self._parse_agent_response(self._gemini_call(prompt))
 
-        duration = int((time.time() - start_time) * 1000)
-        self._save_message(
-            session, 'agent',
-            json.dumps(plan)
-        )
-
+        self._save_message(session, 'agent', json.dumps(plan))
         return plan
 
     def _recommender_agent(self, plan: Dict, field_context: Dict, user_message: str, session: AgentSession) -> Dict[str, Any]:
-        """
-        Recommender Agent: Generates specific, costed recommendations with risk analysis.
-        """
+        """Recommender Agent: Generates costed recommendations with risk analysis."""
         start_time = time.time()
 
         prompt = RECOMMENDER_PROMPT.format(
@@ -138,77 +364,43 @@ class CropAdvisorEngine:
             user_message=user_message
         )
 
-        response = self.client.models.generate_content(model=self.model_name, contents=prompt)
-        recommendation = self._parse_agent_response(response.text)
+        recommendation = self._parse_agent_response(self._gemini_call(prompt))
 
-        duration = int((time.time() - start_time) * 1000)
-        self._save_message(
-            session, 'agent',
-            json.dumps(recommendation)
-        )
-
+        self._save_message(session, 'agent', json.dumps(recommendation))
         return recommendation
 
-    def _execute_tool(self, function_call, session: AgentSession) -> Dict[str, Any]:
-        """Execute a tool call and save the result to database."""
-        start_time = time.time()
-        tool_name = function_call.name
-        tool_args = dict(function_call.args)
+    # ─── Helpers ───
 
-        tool_functions = {
-            'get_weather': lambda args: get_weather(args['lat'], args['lng']),
-            'get_crop_health': lambda args: get_crop_health(args['field_id']),
-            'get_soil_profile': lambda args: get_soil_profile(args['field_id']),
-        }
-
-        try:
-            if tool_name in tool_functions:
-                tool_result = tool_functions[tool_name](tool_args)
-            else:
-                raise ValueError(f"Unknown tool: {tool_name}")
-
-            duration = int((time.time() - start_time) * 1000)
-
-            # Save tool call and result
-            self._save_message(
-                session, 'tool_call',
-                f"Called {tool_name} with {tool_args}",
-                tool_name=tool_name,
-                tool_input=tool_args,
-                tool_output=tool_result
-            )
-
-            return tool_result
-
-        except Exception as e:
-            error_result = {"error": str(e)}
-            duration = int((time.time() - start_time) * 1000)
-
-            self._save_message(
-                session, 'tool_result',
-                f"Tool {tool_name} failed: {str(e)}",
-                tool_name=tool_name,
-                tool_input=tool_args,
-                tool_output=error_result
-            )
-
-            return error_result
+    def _gemini_call(self, prompt: str, max_retries: int = 3) -> str:
+        """Call Gemini with retry logic for rate limits (429)."""
+        for attempt in range(max_retries):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name, contents=prompt
+                )
+                return response.text
+            except genai_errors.ClientError as e:
+                if '429' in str(e) and attempt < max_retries - 1:
+                    wait = 10 * (attempt + 1)
+                    time.sleep(wait)
+                    continue
+                raise
+        raise RuntimeError("Gemini API call failed after retries")
 
     def _save_message(self, session: AgentSession, role: str, content: str,
                      tool_name: str = None, tool_input: Dict = None,
-                     tool_output: Dict = None):
-        """Save a message to the database."""
+                     tool_output: Dict = None, duration_ms: int = None):
         AgentMessage.objects.create(
             session=session,
             role=role,
             content=content,
             tool_name=tool_name or '',
             tool_input=tool_input,
-            tool_output=tool_output
+            tool_output=tool_output,
+            duration_ms=duration_ms,
         )
 
     def _save_recommendation(self, session: AgentSession, field: Field, recommendation: Dict) -> ActionRecommendation:
-        """Save structured recommendation to database, including Gemini-generated extras."""
         return ActionRecommendation.objects.create(
             session=session,
             field=field,
@@ -223,7 +415,6 @@ class CropAdvisorEngine:
         )
 
     def _format_final_response(self, recommendation: Dict) -> str:
-        """Format the final response text for SMS/API."""
         action = recommendation.get('action_type', '').replace('_', ' ').title()
         cost = recommendation.get('estimated_cost', 0)
         risk = recommendation.get('risk_if_delayed', '')
@@ -237,17 +428,13 @@ class CropAdvisorEngine:
         return response
 
     def _parse_agent_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse JSON response from agent, with fallback handling."""
         try:
-            # Try to extract JSON from markdown code blocks
             if '```json' in response_text:
                 json_start = response_text.find('```json') + 7
                 json_end = response_text.find('```', json_start)
                 json_text = response_text[json_start:json_end].strip()
             else:
                 json_text = response_text.strip()
-
             return json.loads(json_text)
         except (json.JSONDecodeError, ValueError):
-            # Fallback: return raw text if JSON parsing fails
             return {"raw_response": response_text}
