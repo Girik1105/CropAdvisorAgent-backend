@@ -21,6 +21,59 @@ class Field(models.Model):
         return f"{self.name} ({self.crop_type})"
 
 
+class WeatherSnapshot(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    field = models.ForeignKey(Field, on_delete=models.CASCADE, related_name='weather_snapshots')
+    session = models.ForeignKey('AgentSession', on_delete=models.CASCADE, related_name='weather_snapshots', null=True, blank=True)
+    temp_f = models.FloatField()
+    temp_c = models.FloatField()
+    humidity_pct = models.FloatField()
+    wind_mph = models.FloatField()
+    conditions = models.CharField(max_length=255)
+    uv_index = models.FloatField(null=True, blank=True)
+    precipitation_forecast = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Weather for {self.field.name} at {self.created_at}"
+
+
+class CropHealthRecord(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    field = models.ForeignKey(Field, on_delete=models.CASCADE, related_name='crop_health_records')
+    ndvi_score = models.FloatField()
+    stress_level = models.CharField(max_length=20)
+    vegetation_trend = models.CharField(max_length=50)
+    vegetation_fraction = models.FloatField()
+    last_satellite_date = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"NDVI {self.ndvi_score} for {self.field.name}"
+
+
+class SoilProfile(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    field = models.OneToOneField(Field, on_delete=models.CASCADE, related_name='soil_profile')
+    soil_type = models.CharField(max_length=100)
+    ph = models.FloatField()
+    organic_matter_pct = models.FloatField()
+    drainage_class = models.CharField(max_length=50)
+    water_holding_capacity = models.CharField(max_length=50)
+    available_water_in_per_ft = models.FloatField()
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Soil: {self.soil_type} for {self.field.name}"
+
+
 class AgentSession(models.Model):
     class Channel(models.TextChoices):
         SMS = 'sms', 'SMS'
@@ -95,7 +148,10 @@ class ActionRecommendation(models.Model):
     urgency = models.CharField(max_length=15, choices=Urgency.choices)
     description = models.TextField()
     estimated_cost = models.DecimalField(max_digits=10, decimal_places=2)
+    cost_breakdown = models.TextField(blank=True, default='')
     risk_if_delayed = models.TextField()
+    timing_rationale = models.TextField(blank=True, default='')
+    implementation_steps = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

@@ -3,12 +3,18 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .engine import CropAdvisorEngine
-from .models import ActionRecommendation, AgentMessage, AgentSession, Field
+from .models import (
+    ActionRecommendation, AgentMessage, AgentSession,
+    CropHealthRecord, Field, SoilProfile, WeatherSnapshot,
+)
 from .serializers import (
     AgentMessageInputSerializer,
     AgentSessionSerializer,
+    CropHealthRecordSerializer,
     FieldSerializer,
+    SoilProfileSerializer,
     TraceSerializer,
+    WeatherSnapshotSerializer,
 )
 
 
@@ -87,3 +93,38 @@ class FieldSessionsView(generics.ListAPIView):
             field_id=self.kwargs['field_id'],
             user=self.request.user,
         ).order_by('-created_at')
+
+
+class FieldWeatherHistoryView(generics.ListAPIView):
+    """GET /api/v1/fields/<field_id>/weather/ — Weather snapshot history."""
+    serializer_class = WeatherSnapshotSerializer
+
+    def get_queryset(self):
+        return WeatherSnapshot.objects.filter(
+            field_id=self.kwargs['field_id'],
+            field__owner=self.request.user,
+        )
+
+
+class FieldCropHealthView(generics.ListAPIView):
+    """GET /api/v1/fields/<field_id>/crop-health/ — Crop health record history."""
+    serializer_class = CropHealthRecordSerializer
+
+    def get_queryset(self):
+        return CropHealthRecord.objects.filter(
+            field_id=self.kwargs['field_id'],
+            field__owner=self.request.user,
+        )
+
+
+class FieldSoilProfileView(APIView):
+    """GET /api/v1/fields/<field_id>/soil/ — Soil profile for a field."""
+
+    def get(self, request, field_id):
+        try:
+            profile = SoilProfile.objects.get(
+                field_id=field_id, field__owner=request.user,
+            )
+        except SoilProfile.DoesNotExist:
+            return Response({"error": "No soil profile for this field"}, status=404)
+        return Response(SoilProfileSerializer(profile).data)

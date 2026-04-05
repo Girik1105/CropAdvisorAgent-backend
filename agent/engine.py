@@ -85,12 +85,13 @@ class CropAdvisorEngine:
     def _field_agent(self, field: Field, session: AgentSession) -> Dict[str, Any]:
         """
         Field Agent: Autonomously gathers weather, crop health, and soil data.
+        Passes field and session so data is saved to WeatherSnapshot, CropHealthRecord, SoilProfile.
         """
         from tools.services import get_weather, get_crop_health, get_soil_profile
 
-        weather = get_weather(field.lat, field.lng)
-        crop_health = get_crop_health(str(field.id))
-        soil = get_soil_profile(str(field.id))
+        weather = get_weather(field.lat, field.lng, field=field, session=session)
+        crop_health = get_crop_health(str(field.id), field=field)
+        soil = get_soil_profile(str(field.id), field=field)
 
         field_context = {
             "field_name": field.name,
@@ -207,7 +208,7 @@ class CropAdvisorEngine:
         )
 
     def _save_recommendation(self, session: AgentSession, field: Field, recommendation: Dict) -> ActionRecommendation:
-        """Save structured recommendation to database."""
+        """Save structured recommendation to database, including Gemini-generated extras."""
         return ActionRecommendation.objects.create(
             session=session,
             field=field,
@@ -215,7 +216,10 @@ class CropAdvisorEngine:
             urgency=recommendation.get('urgency', 'monitor'),
             description=recommendation.get('description', ''),
             estimated_cost=recommendation.get('estimated_cost', 0.0),
-            risk_if_delayed=recommendation.get('risk_if_delayed', '')
+            cost_breakdown=recommendation.get('cost_breakdown', ''),
+            risk_if_delayed=recommendation.get('risk_if_delayed', ''),
+            timing_rationale=recommendation.get('timing_rationale', ''),
+            implementation_steps=recommendation.get('implementation_steps', []),
         )
 
     def _format_final_response(self, recommendation: Dict) -> str:
