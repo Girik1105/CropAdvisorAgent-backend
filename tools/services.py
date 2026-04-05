@@ -290,34 +290,143 @@ def _safe_float(val, default: float) -> float:
 
 def get_market_prices(crop_type: str, field=None, session=None) -> dict:
     """
-    Get current commodity market prices and outlook for a crop type.
-    Uses static data representing realistic USDA/commodity exchange prices.
+    Get current commodity market prices from USDA NASS QuickStats API.
+    Falls back to static data if API is unavailable.
     """
     from agent.models import MarketSnapshot
 
-    key = crop_type.lower().strip()
-    info = MARKET_DATA.get(key, MARKET_DATA["other"])
+    # Try live USDA NASS data first
+    nass_data = _fetch_nass_price(crop_type)
 
-    data = {
-        "crop_type": crop_type,
-        "price_per_unit": info["price"],
-        "unit": info["unit"],
-        "trend_30d": info["trend_30d"],
-        "seasonal_outlook": info["outlook"],
-    }
+    if nass_data:
+        data = {
+            "crop_type": crop_type,
+            "price_per_unit": nass_data["price"],
+            "unit": nass_data["unit"],
+            "trend_30d": nass_data["trend_30d"],
+            "seasonal_outlook": nass_data["outlook"],
+            "data_source": "USDA NASS",
+            "period": nass_data.get("period", ""),
+        }
+    else:
+        key = crop_type.lower().strip()
+        info = MARKET_DATA.get(key, MARKET_DATA["other"])
+        data = {
+            "crop_type": crop_type,
+            "price_per_unit": info["price"],
+            "unit": info["unit"],
+            "trend_30d": info["trend_30d"],
+            "seasonal_outlook": info["outlook"],
+            "data_source": "estimated",
+        }
 
     if field and session:
         MarketSnapshot.objects.create(
             field=field,
             session=session,
             crop_type=crop_type,
-            price_per_unit=info["price"],
-            unit=info["unit"],
-            trend_30d=info["trend_30d"],
-            seasonal_outlook=info["outlook"],
+            price_per_unit=data["price_per_unit"],
+            unit=data["unit"],
+            trend_30d=data["trend_30d"],
+            seasonal_outlook=data["seasonal_outlook"],
         )
 
     return data
+
+
+# NASS API crop mapping: our crop_type → NASS commodity + description filter
+NASS_CROP_MAP = {
+    "cotton":     {"commodity": "COTTON",  "filter": "COTTON - PRICE RECEIVED, MEASURED IN $ / LB"},
+    "citrus":     {"commodity": "ORANGES", "filter": "ORANGES - PRICE RECEIVED"},
+    "alfalfa":    {"commodity": "HAY",     "filter": "HAY, ALFALFA - PRICE RECEIVED"},
+    "corn":       {"commodity": "CORN",    "filter": "CORN, GRAIN - PRICE RECEIVED, MEASURED IN $ / BU"},
+    "wheat":      {"commodity": "WHEAT",   "filter": "WHEAT - PRICE RECEIVED, MEASURED IN $ / BU"},
+    "soybean":    {"commodity": "SOYBEANS","filter": "SOYBEANS - PRICE RECEIVED, MEASURED IN $ / BU"},
+}
+
+
+def _fetch_nass_price(crop_type: str) -> dict | None:
+    """Fetch latest commodity price from USDA NASS QuickStats API."""
+    api_key = settings.USDA_NASS_API_KEY
+    if not api_key:
+        return None
+
+    key = crop_type.lower().strip()
+    mapping = NASS_CROP_MAP.get(key)
+    if not mapping:
+        return None
+
+    try:
+        resp = requests.get(
+            "https://quickstats.nass.usda.gov/api/api_GET/",
+            params={
+                "key": api_key,
+                "commodity_desc": mapping["commodity"],
+                "statisticcat_desc": "PRICE RECEIVED",
+                "agg_level_desc": "NATIONAL",
+                "year__GE": "2025",
+                "format": "json",
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rows = resp.json().get("data", [])
+        if not rows:
+            return None
+
+        # Find rows matching our filter
+        matching = [r for r in rows if mapping["filter"] in r.get("short_desc", "")]
+        if not matching:
+            matching = rows
+
+        # Sort by year descending, pick latest
+        matching.sort(key=lambda r: (r.get("year", ""), r.get("reference_period_desc", "")), reverse=True)
+        latest = matching[0]
+
+        price = _safe_float(latest.get("Value", "").replace(",", ""), 0)
+        if price <= 0:
+            return None
+
+        # Parse unit from unit_desc (e.g., "$ / LB" → "lb")
+        unit_raw = latest.get("unit_desc", "")
+        unit = unit_raw.replace("$ / ", "").replace("$", "").strip().lower()
+        if "bu" in unit:
+            unit = "bushel"
+        elif "ton" in unit:
+            unit = "ton"
+        elif "lb" in unit:
+            unit = "lb"
+        elif "box" in unit:
+            unit = "box"
+        elif "cwt" in unit:
+            unit = "cwt"
+
+        period = f"{latest.get('year', '')} {latest.get('reference_period_desc', '')}".strip()
+
+        # Try to compute trend from two most recent data points
+        trend = "stable"
+        if len(matching) >= 2:
+            prev_price = _safe_float(matching[1].get("Value", "").replace(",", ""), 0)
+            if prev_price > 0:
+                change_pct = ((price - prev_price) / prev_price) * 100
+                if change_pct > 2:
+                    trend = f"up_{abs(change_pct):.0f}pct"
+                elif change_pct < -2:
+                    trend = f"down_{abs(change_pct):.0f}pct"
+
+        # Build outlook from NASS data
+        outlook = f"USDA reported price: ${price:.2f}/{unit} for {period}."
+
+        return {
+            "price": price,
+            "unit": unit,
+            "trend_30d": trend,
+            "outlook": outlook,
+            "period": period,
+        }
+
+    except Exception:
+        return None
 
 
 def get_pest_risk(crop_type: str, temp_f: float, humidity_pct: float, field=None, session=None) -> dict:

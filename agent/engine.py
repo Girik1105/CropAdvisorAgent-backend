@@ -7,7 +7,7 @@ from google.genai import errors as genai_errors
 from .models import Field, AgentSession, AgentMessage, ActionRecommendation
 from .prompts import (
     FIELD_AGENT_PROMPT, ORCHESTRATOR_PROMPT, RECOMMENDER_PROMPT,
-    INTENT_CLASSIFIER_PROMPT, GENERAL_QA_PROMPT,
+    INTENT_CLASSIFIER_PROMPT, GENERAL_QA_PROMPT, CHAT_PROMPT,
 )
 from tools.services import (
     get_weather, get_crop_health, get_soil_profile,
@@ -45,58 +45,137 @@ class CropAdvisorEngine:
         self._save_message(session, 'user', user_message)
 
         try:
-            # Classify intent
-            intent = self._classify_intent(user_message)
+            # Full health check pipeline — always runs all 7 tools
+            # 1. Field Agent — gathers all data
+            field_context = self._field_agent(field, session)
 
-            if intent == "general_question":
-                # General QA path — lighter, no structured recommendation
-                response_text = self._general_qa_agent(user_message, field, session)
-                self._save_message(session, 'agent', response_text)
+            # 2. Orchestrator — creates action plan
+            plan = self._orchestrator_agent(field_context, user_message, session)
 
-                total_time = int((time.time() - start_time) * 1000)
-                return {
-                    "session_id": str(session_id),
-                    "response": response_text,
-                    "recommendation": None,
-                    "total_duration_ms": total_time,
-                }
-            else:
-                # Full action pipeline
-                # 1. Field Agent — gathers all data
-                field_context = self._field_agent(field, session)
+            # 3. Recommender — costed recommendation
+            recommendation = self._recommender_agent(plan, field_context, user_message, session)
 
-                # 2. Orchestrator — creates action plan
-                plan = self._orchestrator_agent(field_context, user_message, session)
+            # 4. Save structured recommendation
+            action_rec = self._save_recommendation(session, field, recommendation)
 
-                # 3. Recommender — costed recommendation
-                recommendation = self._recommender_agent(plan, field_context, user_message, session)
+            # 5. Final response
+            response_text = self._format_final_response(recommendation)
+            self._save_message(session, 'agent', response_text)
 
-                # 4. Save structured recommendation
-                action_rec = self._save_recommendation(session, field, recommendation)
+            total_time = int((time.time() - start_time) * 1000)
 
-                # 5. Final response
-                response_text = self._format_final_response(recommendation)
-                self._save_message(session, 'agent', response_text)
-
-                total_time = int((time.time() - start_time) * 1000)
-
-                return {
-                    "session_id": str(session_id),
-                    "response": response_text,
-                    "recommendation": {
-                        "action_type": action_rec.action_type,
-                        "urgency": action_rec.urgency,
-                        "description": action_rec.description,
-                        "estimated_cost": float(action_rec.estimated_cost),
-                        "risk_if_delayed": action_rec.risk_if_delayed,
-                    },
-                    "total_duration_ms": total_time,
-                }
+            return {
+                "session_id": str(session_id),
+                "response": response_text,
+                "recommendation": {
+                    "action_type": action_rec.action_type,
+                    "urgency": action_rec.urgency,
+                    "description": action_rec.description,
+                    "estimated_cost": float(action_rec.estimated_cost),
+                    "risk_if_delayed": action_rec.risk_if_delayed,
+                },
+                "total_duration_ms": total_time,
+            }
 
         except Exception as e:
             error_msg = f"Agent processing failed: {str(e)}"
             self._save_message(session, 'agent', error_msg)
             raise
+
+    # ─── Chat (lightweight, no tool calls) ───
+
+    def chat(self, field_id: str, user_message: str, session_id: str) -> Dict[str, Any]:
+        """
+        Lightweight chat — answers questions using existing DB data, no new tool calls.
+        Single Gemini call with field context from database.
+        """
+        from .models import (
+            WeatherSnapshot, CropHealthRecord, SoilProfile,
+            MarketSnapshot, PestRiskAssessment, WaterUsageEstimate,
+        )
+
+        start_time = time.time()
+
+        field = Field.objects.get(id=field_id)
+        session = AgentSession.objects.get(id=session_id)
+
+        self._save_message(session, 'user', user_message)
+
+        # Build context from latest DB records (no API calls)
+        field_data = {}
+
+        weather = WeatherSnapshot.objects.filter(field=field).first()
+        if weather:
+            field_data["weather"] = {
+                "temp_f": weather.temp_f, "humidity_pct": weather.humidity_pct,
+                "wind_mph": weather.wind_mph, "conditions": weather.conditions,
+                "uv_index": weather.uv_index, "updated": str(weather.created_at),
+            }
+
+        crop = CropHealthRecord.objects.filter(field=field).first()
+        if crop:
+            field_data["crop_health"] = {
+                "ndvi_score": crop.ndvi_score, "stress_level": crop.stress_level,
+                "vegetation_trend": crop.vegetation_trend,
+                "vegetation_fraction": crop.vegetation_fraction,
+            }
+
+        try:
+            soil = field.soil_profile
+            field_data["soil"] = {
+                "soil_type": soil.soil_type, "ph": soil.ph,
+                "organic_matter_pct": soil.organic_matter_pct,
+                "drainage_class": soil.drainage_class,
+                "water_holding_capacity": soil.water_holding_capacity,
+            }
+        except SoilProfile.DoesNotExist:
+            pass
+
+        market = MarketSnapshot.objects.filter(field=field).first()
+        if market:
+            field_data["market"] = {
+                "price_per_unit": market.price_per_unit, "unit": market.unit,
+                "trend_30d": market.trend_30d,
+            }
+
+        pest = PestRiskAssessment.objects.filter(field=field).first()
+        if pest:
+            field_data["pest_risk"] = {
+                "risk_level": pest.risk_level,
+                "threats": pest.primary_threats,
+            }
+
+        water = WaterUsageEstimate.objects.filter(field=field).first()
+        if water:
+            field_data["water_usage"] = {
+                "daily_need_gal": water.daily_need_gal,
+                "deficit_pct": water.deficit_pct,
+                "recommendation": water.recommendation,
+            }
+
+        prompt = CHAT_PROMPT.format(
+            user_message=user_message,
+            field_name=field.name,
+            crop_type=field.crop_type,
+            area_acres=field.area_acres,
+            lat=field.lat,
+            lng=field.lng,
+            field_data_json=json.dumps(field_data, indent=2) if field_data else "No data yet — run a Health Check first.",
+        )
+
+        try:
+            response_text = self._gemini_call(prompt).strip()
+        except Exception as e:
+            response_text = f"Sorry, I couldn't process that right now. Error: {str(e)}"
+
+        self._save_message(session, 'agent', response_text)
+
+        total_time = int((time.time() - start_time) * 1000)
+        return {
+            "session_id": str(session_id),
+            "response": response_text,
+            "total_duration_ms": total_time,
+        }
 
     # ─── Intent Classification ───
 

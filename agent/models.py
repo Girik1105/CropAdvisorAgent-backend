@@ -129,6 +129,13 @@ class AgentSession(models.Model):
     class Channel(models.TextChoices):
         SMS = 'sms', 'SMS'
         DASHBOARD = 'dashboard', 'Dashboard'
+        CHAT = 'chat', 'Chat'
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        PROCESSING = 'processing', 'Processing'
+        COMPLETED = 'completed', 'Completed'
+        FAILED = 'failed', 'Failed'
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
@@ -137,11 +144,14 @@ class AgentSession(models.Model):
     phone_number = models.CharField(max_length=20, blank=True, default='')
     field = models.ForeignKey(Field, on_delete=models.CASCADE, related_name='sessions')
     channel = models.CharField(max_length=10, choices=Channel.choices)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    result = models.JSONField(null=True, blank=True)
+    error_message = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"Session {self.id} ({self.channel})"
+        return f"Session {self.id} ({self.channel} — {self.status})"
 
 
 class AgentMessage(models.Model):
