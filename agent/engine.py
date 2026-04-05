@@ -18,48 +18,8 @@ class CropAdvisorEngine:
 
     def __init__(self):
         # Initialize Google Generative AI
-        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        self.model_name = "gemini-2.5-flash-preview-04-17"
-
-        # Define available tools for Gemini function calling
-        self.tools = [
-            genai.types.Tool(function_declarations=[
-                genai.types.FunctionDeclaration(
-                    name="get_weather",
-                    description="Get current weather and 7-day precipitation forecast for a location.",
-                    parameters=genai.types.Schema(
-                        type="OBJECT",
-                        properties={
-                            "lat": genai.types.Schema(type="NUMBER"),
-                            "lng": genai.types.Schema(type="NUMBER"),
-                        },
-                        required=["lat", "lng"]
-                    )
-                ),
-                genai.types.FunctionDeclaration(
-                    name="get_crop_health",
-                    description="Get NDVI vegetation health score for a field.",
-                    parameters=genai.types.Schema(
-                        type="OBJECT",
-                        properties={
-                            "field_id": genai.types.Schema(type="STRING"),
-                        },
-                        required=["field_id"]
-                    )
-                ),
-                genai.types.FunctionDeclaration(
-                    name="get_soil_profile",
-                    description="Get USDA soil profile for a field.",
-                    parameters=genai.types.Schema(
-                        type="OBJECT",
-                        properties={
-                            "field_id": genai.types.Schema(type="STRING"),
-                        },
-                        required=["field_id"]
-                    )
-                ),
-            ])
-        ]
+        self.client = genai.Client(api_key=settings.GEMINI_API_KEY, http_options={"api_version": "v1"})
+        self.model_name = "gemini-2.5-flash"
 
     def run(self, field_id: str, user_message: str, session_id: str) -> Dict[str, Any]:
         """
@@ -126,44 +86,21 @@ class CropAdvisorEngine:
         """
         Field Agent: Autonomously gathers weather, crop health, and soil data.
         """
-        start_time = time.time()
+        from tools.services import get_weather, get_crop_health, get_soil_profile
 
-        prompt = FIELD_AGENT_PROMPT.format(
-            field_name=field.name,
-            crop_type=field.crop_type,
-            field_id=str(field.id),
-            lat=field.lat,
-            lng=field.lng
-        )
+        weather = get_weather(field.lat, field.lng)
+        crop_health = get_crop_health(str(field.id))
+        soil = get_soil_profile(str(field.id))
 
-        # Call Gemini with tools
-        response = self.client.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config={"tools": self.tools}
-        )
+        field_context = {
+            "field_name": field.name,
+            "crop_type": field.crop_type,
+            "weather": weather,
+            "crop_health": crop_health,
+            "soil": soil
+        }
 
-        # Process function calls
-        tool_data = {}
-        for part in response.candidates[0].content.parts:
-            if hasattr(part, 'function_call'):
-                tool_result = self._execute_tool(part.function_call, session)
-                tool_data[part.function_call.name] = tool_result
-
-        # Get final field context from agent
-        final_response = self.client.models.generate_content(
-            model=self.model_name,
-            contents="Based on the tool results, provide a JSON summary of the field context."
-        )
-
-        duration = int((time.time() - start_time) * 1000)
-        field_context = self._parse_agent_response(final_response.text)
-
-        self._save_message(
-            session, 'agent',
-            json.dumps(field_context)
-        )
-
+        self._save_message(session, 'agent', json.dumps(field_context))
         return field_context
 
     def _orchestrator_agent(self, field_context: Dict, user_message: str, session: AgentSession) -> Dict[str, Any]:
