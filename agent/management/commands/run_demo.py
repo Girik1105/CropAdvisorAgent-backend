@@ -1,15 +1,16 @@
 """
-Full demo script that showcases CropAdvisor's agentic capabilities.
+Full demo script that showcases CropAdvisor's agentic capabilities with REAL data.
 
-Runs real scenarios through the Gemini-powered agent engine to demonstrate:
-- 7-tool autonomous data gathering (weather, NDVI, soil, market, pest, water, growth)
-- Intent classification (action vs general Q&A)
-- Multi-agent pipeline (Field Agent → Orchestrator → Recommender)
-- SMS + Dashboard channels
-- Cost estimation and risk quantification
+Data sources hit during the demo:
+- OpenWeatherMap API — live weather for Casa Grande, AZ
+- USDA SSURGO API — real soil profiles by GPS coordinates
+- NASA POWER API — satellite evapotranspiration (FAO Penman-Monteith ET₀)
+- Rule-based pest risk engine — uses live weather conditions
+- Market commodity prices — realistic USDA/exchange data
+- Growth stage calendar — month-specific guidance per crop
 
 Usage:
-    python manage.py run_demo                  # Run all 5 scenarios
+    python manage.py run_demo                  # Run all scenarios
     python manage.py run_demo --scenario 1     # Run just one scenario
     python manage.py run_demo --skip-seed      # Skip seeding, use existing data
     python manage.py run_demo --reset          # Wipe + re-seed + run
@@ -37,6 +38,7 @@ DEMO_USER = {
     "phone": "+16025551234",
 }
 
+# Real coordinates in Pinal County, AZ — actual farmland
 FIELDS = [
     {
         "name": "North 40 Cotton",
@@ -46,18 +48,12 @@ FIELDS = [
         "area_acres": 40.0,
         "soil_type": "sandy loam",
         "owner_phone": "+16025551234",
+        # NDVI simulates drought-stressed cotton
         "ndvi": 0.38,
         "stress": "high",
         "trend": "declining",
         "fraction": 0.48,
-        "soil_profile": {
-            "soil_type": "Casa Grande sandy loam",
-            "ph": 7.8,
-            "organic_matter_pct": 1.2,
-            "drainage_class": "well-drained",
-            "water_holding_capacity": "low",
-            "available_water_in_per_ft": 1.1,
-        },
+        # NO soil_profile — agent will fetch from USDA SSURGO API
     },
     {
         "name": "Mesa Citrus Grove",
@@ -67,18 +63,11 @@ FIELDS = [
         "area_acres": 15.0,
         "soil_type": "clay loam",
         "owner_phone": "+16025559876",
+        # NDVI simulates healthy citrus
         "ndvi": 0.72,
         "stress": "low",
         "trend": "stable",
         "fraction": 0.84,
-        "soil_profile": {
-            "soil_type": "Mohall clay loam",
-            "ph": 7.2,
-            "organic_matter_pct": 2.4,
-            "drainage_class": "moderately well-drained",
-            "water_holding_capacity": "moderate",
-            "available_water_in_per_ft": 1.8,
-        },
     },
     {
         "name": "Chandler Alfalfa",
@@ -88,18 +77,11 @@ FIELDS = [
         "area_acres": 60.0,
         "soil_type": "silty clay",
         "owner_phone": "+16025551234",
+        # NDVI simulates severe nitrogen deficiency
         "ndvi": 0.29,
         "stress": "severe",
         "trend": "declining",
         "fraction": 0.35,
-        "soil_profile": {
-            "soil_type": "Laveen silty clay",
-            "ph": 7.5,
-            "organic_matter_pct": 1.8,
-            "drainage_class": "somewhat poorly drained",
-            "water_holding_capacity": "high",
-            "available_water_in_per_ft": 2.2,
-        },
     },
 ]
 
@@ -107,7 +89,11 @@ SCENARIOS = [
     {
         "id": 1,
         "title": "Cotton Drought Emergency",
-        "description": "Farmer checks on cotton field during Arizona heat wave. NDVI is dropping, no rain in forecast, soil moisture critically low.",
+        "description": (
+            "Arizona heat wave — 100°F+, no rain in weeks. Agent gathers LIVE weather "
+            "(OpenWeatherMap), REAL soil data (USDA SSURGO), NASA POWER evapotranspiration, "
+            "pest risk assessment, market prices, and growth stage. Should recommend immediate irrigation."
+        ),
         "field_index": 0,
         "message": "How's my field looking? We haven't had rain in weeks and it's been over 100 degrees.",
         "channel": "dashboard",
@@ -116,7 +102,10 @@ SCENARIOS = [
     {
         "id": 2,
         "title": "Citrus Grove Check-in",
-        "description": "Routine check on healthy citrus grove. NDVI is good, moderate weather. Agent should confirm health and recommend monitoring.",
+        "description": (
+            "Routine check on healthy citrus grove (NDVI 0.72). Agent should confirm health, "
+            "note any pest concerns from weather conditions, and recommend monitoring."
+        ),
         "field_index": 1,
         "message": "Check on my citrus trees please. Any issues I should know about?",
         "channel": "dashboard",
@@ -124,17 +113,25 @@ SCENARIOS = [
     },
     {
         "id": 3,
-        "title": "Alfalfa Nitrogen Deficiency",
-        "description": "Farmer notices yellowing alfalfa. Severe NDVI decline. Agent should identify nitrogen deficiency and recommend fertilization.",
+        "title": "Alfalfa Nitrogen Crisis",
+        "description": (
+            "Farmer notices yellowing alfalfa (NDVI 0.29 — severe). Agent should identify "
+            "nitrogen deficiency, calculate fertilizer cost for 60 acres, and factor in "
+            "alfalfa market prices ($225/ton) for ROI analysis."
+        ),
         "field_index": 2,
-        "message": "My alfalfa looks yellow and thin. The last cutting was weak. What should I do?",
+        "message": "My alfalfa looks yellow and thin. The last cutting was really weak. What should I do?",
         "channel": "dashboard",
         "expected_action": "fertilize",
     },
     {
         "id": 4,
-        "title": "General Agricultural Question",
-        "description": "Farmer asks a general knowledge question. Agent should route to QA path without running the full tool pipeline.",
+        "title": "General Question (Intent Routing)",
+        "description": (
+            "Tests the intent classifier. Farmer asks a general knowledge question — agent "
+            "should route to the QA path WITHOUT calling the 7-tool pipeline. Proves the "
+            "agent reasons about what tools to use, not just runs everything blindly."
+        ),
         "field_index": 0,
         "message": "What's the best time of year to plant cotton in Arizona? And what variety do you recommend for sandy loam soil?",
         "channel": "dashboard",
@@ -143,11 +140,28 @@ SCENARIOS = [
     {
         "id": 5,
         "title": "SMS Water Cost Estimate",
-        "description": "Farmer texts via SMS asking about irrigation costs. Simulates the Twilio webhook path. Full pipeline with cost focus.",
+        "description": (
+            "Simulates Twilio SMS path. Farmer texts asking about irrigation costs. Agent "
+            "uses NASA POWER ET₀ data + crop Kc coefficient + field acreage to calculate "
+            "precise daily water needs and cost at $85/acre-foot (Arizona rates)."
+        ),
         "field_index": 0,
         "message": "Need a water cost estimate for my cotton. How much will it cost to irrigate this week?",
         "channel": "sms",
         "expected_action": "irrigate with cost",
+    },
+    {
+        "id": 6,
+        "title": "Pest Alert After Weather Check",
+        "description": (
+            "Farmer asks specifically about pests. Agent should cross-reference live weather "
+            "(temperature + humidity) with crop-specific pest rules. In Arizona April heat "
+            "with low humidity → spider mites and thrips are the primary threats for cotton."
+        ),
+        "field_index": 0,
+        "message": "I'm seeing some damage on my cotton leaves. Could it be pests? What should I spray?",
+        "channel": "dashboard",
+        "expected_action": "pest_alert",
     },
 ]
 
@@ -155,12 +169,12 @@ SCENARIOS = [
 
 
 class Command(BaseCommand):
-    help = "Run a full CropAdvisor demo with real Gemini agent calls across 5 scenarios."
+    help = "Run a full CropAdvisor demo with real Gemini agent calls and live data APIs."
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--scenario", type=int, default=0,
-            help="Run only this scenario number (1-5). Default: run all.",
+            help="Run only this scenario number (1-6). Default: run all.",
         )
         parser.add_argument(
             "--skip-seed", action="store_true",
@@ -183,17 +197,19 @@ class Command(BaseCommand):
             user = User.objects.get(username=DEMO_USER["username"])
             fields = list(Field.objects.filter(owner=user).order_by('name'))
 
-        # Determine which scenarios to run
         scenarios = SCENARIOS
         if options["scenario"]:
             scenarios = [s for s in SCENARIOS if s["id"] == options["scenario"]]
             if not scenarios:
-                self.stderr.write(f"Scenario {options['scenario']} not found (valid: 1-5)")
+                self.stderr.write(f"Scenario {options['scenario']} not found (valid: 1-6)")
                 return
 
         self.stdout.write("")
         self.stdout.write(self._divider())
-        self.stdout.write(self.style.SUCCESS(f"  Running {len(scenarios)} scenario(s) through the Gemini agent engine"))
+        self.stdout.write(self.style.SUCCESS(
+            f"  Running {len(scenarios)} scenario(s) through the Gemini agent engine"
+        ))
+        self.stdout.write(f"  Data sources: OpenWeatherMap (live), USDA SSURGO (real), NASA POWER (satellite)")
         self.stdout.write(self._divider())
 
         results = []
@@ -208,6 +224,7 @@ class Command(BaseCommand):
     def _seed(self):
         self.stdout.write("")
         self.stdout.write(self.style.HTTP_INFO("  Seeding demo data..."))
+        self.stdout.write("  (Soil profiles NOT pre-seeded — agent will fetch from USDA SSURGO API)")
 
         user, created = User.objects.get_or_create(
             username=DEMO_USER["username"],
@@ -236,11 +253,7 @@ class Command(BaseCommand):
             )
             fields.append(field)
 
-            # Soil profile
-            if not SoilProfile.objects.filter(field=field).exists():
-                SoilProfile.objects.create(field=field, **fd["soil_profile"])
-
-            # Crop health record (realistic per-field data)
+            # Crop health (NDVI) — seed this so the agent has vegetation stress data
             if not CropHealthRecord.objects.filter(field=field).exists():
                 CropHealthRecord.objects.create(
                     field=field,
@@ -251,10 +264,14 @@ class Command(BaseCommand):
                     last_satellite_date=timezone.now(),
                 )
 
+            # NO soil profile seeding — let agent fetch from USDA SSURGO
+            # NO weather seeding — let agent fetch live from OpenWeatherMap
+
             status = "Created" if created else "Exists"
             self.stdout.write(
                 f"    {status}: {field.name} | {field.crop_type} | "
-                f"{field.area_acres}ac | NDVI {fd['ndvi']} ({fd['stress']})"
+                f"{field.area_acres}ac | NDVI {fd['ndvi']} ({fd['stress']}) | "
+                f"({field.lat}, {field.lng})"
             )
 
         return user, fields
@@ -281,6 +298,7 @@ class Command(BaseCommand):
         ))
         self.stdout.write(f"  {scenario['description']}")
         self.stdout.write(f"  Field: {field.name} ({field.crop_type}, {field.area_acres} acres)")
+        self.stdout.write(f"  Coordinates: {field.lat}°N, {abs(field.lng)}°W")
         self.stdout.write(f"  Channel: {scenario['channel'].upper()}")
         self.stdout.write(f"  Expected: {scenario['expected_action']}")
         self.stdout.write(self._divider())
@@ -289,7 +307,6 @@ class Command(BaseCommand):
         self.stdout.write("")
         self.stdout.write("  Agent is thinking...")
 
-        # Create session
         session = AgentSession.objects.create(
             user=user,
             field=field,
@@ -297,7 +314,6 @@ class Command(BaseCommand):
             phone_number=DEMO_USER["phone"] if scenario["channel"] == "sms" else "",
         )
 
-        # Run engine
         start = time.time()
         try:
             from agent.engine import CropAdvisorEngine
@@ -309,10 +325,25 @@ class Command(BaseCommand):
             )
             elapsed = time.time() - start
 
-            # Count tool calls
-            tool_calls = AgentMessage.objects.filter(
-                session=session, role='tool_call'
-            ).count()
+            # Count tool calls and extract data sources
+            tool_msgs = AgentMessage.objects.filter(session=session, role='tool_call')
+            tool_calls = tool_msgs.count()
+
+            # Check for real data sources in tool outputs
+            data_sources = []
+            for msg in tool_msgs:
+                if msg.tool_output:
+                    src = msg.tool_output.get("data_source")
+                    if src and src not in data_sources:
+                        data_sources.append(src)
+                    # Check for NASA POWER in water usage
+                    if msg.tool_output.get("et0_mm_per_day"):
+                        if "NASA POWER" not in data_sources:
+                            data_sources.append("NASA POWER")
+                    # Check for USDA in soil
+                    if msg.tool_output.get("component_name"):
+                        if "USDA SSURGO" not in data_sources:
+                            data_sources.append("USDA SSURGO")
 
             rec = result.get("recommendation")
 
@@ -331,18 +362,27 @@ class Command(BaseCommand):
                     "no_action": self.style.HTTP_NOT_MODIFIED,
                 }.get(action, self.style.HTTP_NOT_MODIFIED)
 
-                self.stdout.write(f"  {action_color(f'ACTION: {action.upper()}')}  |  Urgency: {urgency}  |  Cost: ${cost:.0f}")
+                self.stdout.write(
+                    f"  {action_color(f'ACTION: {action.upper()}')}  |  "
+                    f"Urgency: {urgency}  |  Cost: ${cost:.0f}"
+                )
                 self.stdout.write("")
-                self.stdout.write(f"  Agent: {result['response'][:200]}{'...' if len(result['response']) > 200 else ''}")
+                self.stdout.write(f"  Agent: {result['response'][:250]}{'...' if len(result['response']) > 250 else ''}")
                 if risk:
-                    self.stdout.write(f"  Risk: {risk[:150]}{'...' if len(risk) > 150 else ''}")
+                    self.stdout.write(f"  Risk:  {risk[:200]}{'...' if len(risk) > 200 else ''}")
             else:
-                self.stdout.write(self.style.HTTP_NOT_MODIFIED("  GENERAL Q&A (no structured recommendation)"))
+                self.stdout.write(self.style.HTTP_NOT_MODIFIED(
+                    "  GENERAL Q&A (no structured recommendation)"
+                ))
                 self.stdout.write("")
-                self.stdout.write(f"  Agent: {result['response'][:300]}{'...' if len(result['response']) > 300 else ''}")
+                self.stdout.write(f"  Agent: {result['response'][:350]}{'...' if len(result['response']) > 350 else ''}")
 
             self.stdout.write("")
-            self.stdout.write(f"  Tools called: {tool_calls}  |  Duration: {elapsed:.1f}s  |  Session: {session.id}")
+            sources_str = ", ".join(data_sources) if data_sources else "cached/static"
+            self.stdout.write(
+                f"  Tools: {tool_calls}  |  Duration: {elapsed:.1f}s  |  "
+                f"Data: {sources_str}"
+            )
 
             return {
                 "scenario": scenario,
@@ -352,12 +392,15 @@ class Command(BaseCommand):
                 "cost": rec.get("estimated_cost", 0) if rec else 0,
                 "tool_calls": tool_calls,
                 "duration": elapsed,
+                "data_sources": data_sources,
                 "response_preview": result["response"][:100],
             }
 
         except Exception as e:
             elapsed = time.time() - start
             self.stdout.write(self.style.ERROR(f"  FAILED: {e}"))
+            import traceback
+            traceback.print_exc()
             return {
                 "scenario": scenario,
                 "success": False,
@@ -366,6 +409,7 @@ class Command(BaseCommand):
                 "cost": 0,
                 "tool_calls": 0,
                 "duration": elapsed,
+                "data_sources": [],
                 "response_preview": str(e)[:100],
             }
 
@@ -378,26 +422,29 @@ class Command(BaseCommand):
         self.stdout.write(self._divider("="))
         self.stdout.write("")
 
-        # Table header
         self.stdout.write(
-            f"  {'#':<3} {'Scenario':<28} {'Status':<8} {'Action':<14} {'Urgency':<12} "
-            f"{'Cost':<10} {'Tools':<7} {'Time':<7}"
+            f"  {'#':<3} {'Scenario':<30} {'Status':<8} {'Action':<14} "
+            f"{'Urgency':<12} {'Cost':<8} {'Tools':<6} {'Time':<7} {'Data Sources'}"
         )
-        self.stdout.write(f"  {'─' * 95}")
+        self.stdout.write(f"  {'─' * 110}")
 
         total_time = 0
         total_tools = 0
         success_count = 0
+        all_sources = set()
 
         for r in results:
             s = r["scenario"]
             status = self.style.SUCCESS("OK") if r["success"] else self.style.ERROR("FAIL")
             cost_str = f"${r['cost']:.0f}" if r["cost"] else "—"
             action = r["action"].upper() if r["action"] else "—"
+            sources = ", ".join(r.get("data_sources", [])) or "—"
+            all_sources.update(r.get("data_sources", []))
 
             self.stdout.write(
-                f"  {s['id']:<3} {s['title']:<28} {status:<17} {action:<14} {r['urgency']:<12} "
-                f"{cost_str:<10} {r['tool_calls']:<7} {r['duration']:.1f}s"
+                f"  {s['id']:<3} {s['title']:<30} {status:<17} {action:<14} "
+                f"{r['urgency']:<12} {cost_str:<8} {r['tool_calls']:<6} "
+                f"{r['duration']:.1f}s   {sources}"
             )
 
             total_time += r["duration"]
@@ -405,14 +452,15 @@ class Command(BaseCommand):
             if r["success"]:
                 success_count += 1
 
-        self.stdout.write(f"  {'─' * 95}")
+        self.stdout.write(f"  {'─' * 110}")
         self.stdout.write(
-            f"  {'TOTAL':<3} {'':<28} {success_count}/{len(results):<8} {'':<14} {'':<12} "
-            f"{'':<10} {total_tools:<7} {total_time:.1f}s"
+            f"  {'ALL':<3} {'':<30} {success_count}/{len(results):<8} "
+            f"{'':<14} {'':<12} {'':<8} {total_tools:<6} {total_time:.1f}s"
         )
 
         self.stdout.write("")
         self.stdout.write(self._divider())
+        self.stdout.write(f"  Real data sources used: {', '.join(sorted(all_sources)) or 'none'}")
         self.stdout.write(f"  Login:  username={DEMO_USER['username']}  password={DEMO_USER['password']}")
         self.stdout.write(f"  Phone:  {DEMO_USER['phone']} (for SMS/Twilio testing)")
         self.stdout.write(self._divider())

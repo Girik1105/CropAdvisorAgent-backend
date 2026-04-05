@@ -1,8 +1,9 @@
 import json
 import time
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any
 from django.conf import settings
 from google import genai
+from google.genai import errors as genai_errors
 from .models import Field, AgentSession, AgentMessage, ActionRecommendation
 from .prompts import (
     FIELD_AGENT_PROMPT, ORCHESTRATOR_PROMPT, RECOMMENDER_PROMPT,
@@ -103,8 +104,7 @@ class CropAdvisorEngine:
         """Quick Gemini call to classify the user's intent."""
         prompt = INTENT_CLASSIFIER_PROMPT.format(user_message=user_message)
         try:
-            response = self.client.models.generate_content(model=self.model_name, contents=prompt)
-            result = response.text.strip().lower()
+            result = self._gemini_call(prompt).strip().lower()
             if "general" in result:
                 return "general_question"
             return "action_needed"
@@ -141,8 +141,7 @@ class CropAdvisorEngine:
             duration_ms=0,
         )
 
-        response = self.client.models.generate_content(model=self.model_name, contents=prompt)
-        return response.text.strip()
+        return self._gemini_call(prompt).strip()
 
     # ─── Field Agent (7 tools) ───
 
@@ -271,8 +270,7 @@ class CropAdvisorEngine:
             field_context=json.dumps(field_context, indent=2)
         )
 
-        response = self.client.models.generate_content(model=self.model_name, contents=prompt)
-        plan = self._parse_agent_response(response.text)
+        plan = self._parse_agent_response(self._gemini_call(prompt))
 
         self._save_message(session, 'agent', json.dumps(plan))
         return plan
@@ -287,13 +285,28 @@ class CropAdvisorEngine:
             user_message=user_message
         )
 
-        response = self.client.models.generate_content(model=self.model_name, contents=prompt)
-        recommendation = self._parse_agent_response(response.text)
+        recommendation = self._parse_agent_response(self._gemini_call(prompt))
 
         self._save_message(session, 'agent', json.dumps(recommendation))
         return recommendation
 
     # ─── Helpers ───
+
+    def _gemini_call(self, prompt: str, max_retries: int = 3) -> str:
+        """Call Gemini with retry logic for rate limits (429)."""
+        for attempt in range(max_retries):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name, contents=prompt
+                )
+                return response.text
+            except genai_errors.ClientError as e:
+                if '429' in str(e) and attempt < max_retries - 1:
+                    wait = 10 * (attempt + 1)
+                    time.sleep(wait)
+                    continue
+                raise
+        raise RuntimeError("Gemini API call failed after retries")
 
     def _save_message(self, session: AgentSession, role: str, content: str,
                      tool_name: str = None, tool_input: Dict = None,

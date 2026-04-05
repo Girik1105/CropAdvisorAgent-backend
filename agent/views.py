@@ -52,7 +52,13 @@ class AgentMessageView(APIView):
             )
             return Response(result)
         except Exception as e:
-            return Response({"error": f"Agent processing failed: {str(e)}"}, status=500)
+            error_str = str(e)
+            if '429' in error_str or 'RESOURCE_EXHAUSTED' in error_str:
+                return Response(
+                    {"error": "AI rate limit reached. Please wait a moment and try again."},
+                    status=429,
+                )
+            return Response({"error": f"Agent processing failed: {error_str}"}, status=500)
 
 
 class AgentTraceView(APIView):
