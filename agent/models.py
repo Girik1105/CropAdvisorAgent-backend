@@ -74,6 +74,57 @@ class SoilProfile(models.Model):
         return f"Soil: {self.soil_type} for {self.field.name}"
 
 
+class MarketSnapshot(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    field = models.ForeignKey(Field, on_delete=models.CASCADE, related_name='market_snapshots')
+    session = models.ForeignKey('AgentSession', on_delete=models.CASCADE, related_name='market_snapshots', null=True, blank=True)
+    crop_type = models.CharField(max_length=100)
+    price_per_unit = models.FloatField()
+    unit = models.CharField(max_length=20)
+    trend_30d = models.CharField(max_length=50)
+    seasonal_outlook = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Market {self.crop_type} @ ${self.price_per_unit}/{self.unit}"
+
+
+class PestRiskAssessment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    field = models.ForeignKey(Field, on_delete=models.CASCADE, related_name='pest_assessments')
+    session = models.ForeignKey('AgentSession', on_delete=models.CASCADE, related_name='pest_assessments', null=True, blank=True)
+    risk_level = models.CharField(max_length=20)
+    primary_threats = models.JSONField(default=list)
+    preventive_actions = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Pest risk: {self.risk_level} for {self.field.name}"
+
+
+class WaterUsageEstimate(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    field = models.ForeignKey(Field, on_delete=models.CASCADE, related_name='water_estimates')
+    session = models.ForeignKey('AgentSession', on_delete=models.CASCADE, related_name='water_estimates', null=True, blank=True)
+    daily_need_gal = models.IntegerField()
+    deficit_pct = models.IntegerField()
+    recommendation = models.TextField()
+    est_cost = models.FloatField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Water: {self.daily_need_gal} gal/day for {self.field.name}"
+
+
 class AgentSession(models.Model):
     class Channel(models.TextChoices):
         SMS = 'sms', 'SMS'

@@ -36,11 +36,11 @@ class AgentMessageView(APIView):
                 return Response({"error": "No fields registered."}, status=400)
 
         channel = 'sms' if data.get('phone_number') else 'dashboard'
-        session, _ = AgentSession.objects.get_or_create(
+        session = AgentSession.objects.create(
             user=request.user,
             field=field,
             channel=channel,
-            defaults={'phone_number': data.get('phone_number', '')},
+            phone_number=data.get('phone_number', ''),
         )
 
         try:
@@ -83,6 +83,15 @@ class FieldListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
+
+
+class FieldDetailView(generics.RetrieveDestroyAPIView):
+    serializer_class = FieldSerializer
+    lookup_field = 'id'
+    lookup_url_kwarg = 'field_id'
+
+    def get_queryset(self):
+        return Field.objects.filter(owner=self.request.user)
 
 
 class FieldSessionsView(generics.ListAPIView):
