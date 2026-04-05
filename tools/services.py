@@ -113,7 +113,7 @@ def get_crop_health(field_id: str, field=None) -> dict:
             stress_level=data["stress_level"],
             vegetation_trend=data["vegetation_trend"],
             vegetation_fraction=data["vegetation_fraction"],
-            last_satellite_date=timezone.datetime(2026, 4, 3, 14, 30, tzinfo=timezone.utc),
+            last_satellite_date=timezone.now(),
         )
 
     return data
