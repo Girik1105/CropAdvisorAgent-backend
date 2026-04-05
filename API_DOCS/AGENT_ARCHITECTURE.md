@@ -134,13 +134,13 @@ The Field Agent sends a prompt to Gemini. Gemini responds with `function_call` p
 
 ### Tool Functions (`tools/services.py`)
 
-| Function | Data Source | Notes |
-|----------|------------|-------|
-| `get_weather(lat, lng)` | OpenWeatherMap API | Falls back to static data if no API key |
-| `get_crop_health(field_id)` | Static JSON | Hackathon — returns hardcoded NDVI data |
-| `get_soil_profile(field_id)` | Static JSON | Hackathon — returns hardcoded USDA soil data |
+| Function | Data Source | DB Storage |
+|----------|------------|------------|
+| `get_weather(lat, lng, field, session)` | OpenWeatherMap API (static fallback) | Saves **WeatherSnapshot** per call |
+| `get_crop_health(field_id, field)` | **CropHealthRecord** from DB | Reads latest record; creates default if none |
+| `get_soil_profile(field_id, field)` | **SoilProfile** from DB | Reads profile; creates default if none |
 
-These same functions are also exposed as API endpoints at `/api/v1/tools/` for frontend debugging.
+When called from the engine, the `field` and `session` objects are passed so data is persisted. When called from the tool API endpoints (`/api/v1/tools/`), no field is passed so data is returned without saving.
 
 ---
 
@@ -149,33 +149,51 @@ These same functions are also exposed as API endpoints at `/api/v1/tools/` for f
 ```
 Field (registered crop field)
   │
+  ├─→ WeatherSnapshot (one per agent run — historical weather data)
+  │     temp_f, humidity_pct, wind_mph, conditions, uv_index
+  │     precipitation_forecast (JSON array)
+  │     linked to session that triggered it
+  │
+  ├─→ CropHealthRecord (NDVI readings over time)
+  │     ndvi_score, stress_level, vegetation_trend
+  │     vegetation_fraction, last_satellite_date
+  │
+  ├─→ SoilProfile (one-to-one — soil characteristics)
+  │     soil_type, ph, organic_matter_pct
+  │     drainage_class, water_holding_capacity
+  │
   └─→ AgentSession (one per user+field+channel combo)
         │
         ├─→ AgentMessage (ordered by created_at)
-        │     role: user           ← farmer's input
-        │     role: tool_call      ← get_weather, get_crop_health, get_soil_profile
-        │     role: field_agent    ← Agent 1 output
-        │     role: orchestrator   ← Agent 2 output
-        │     role: recommender    ← Agent 3 output
-        │     role: final_response ← formatted response text
+        │     role: user    ← farmer's input
+        │     role: agent   ← field context / orchestrator plan / recommendation / final text
         │
         └─→ ActionRecommendation
-              action_type: irrigate/fertilize/pest_alert/harvest/no_action
-              urgency: immediate/within_24h/within_3d/monitor
-              estimated_cost: decimal
-              risk_if_delayed: text
+              action_type, urgency, description
+              estimated_cost, cost_breakdown
+              risk_if_delayed, timing_rationale
+              implementation_steps (JSON array)
 ```
+
+### What Gets Saved Per Agent Run
+
+| Model | When Created | Data Source |
+|-------|-------------|-------------|
+| WeatherSnapshot | Every run | OpenWeatherMap API or static fallback |
+| CropHealthRecord | First run only (unless updated) | Default demo values |
+| SoilProfile | First run only (unless updated) | Default demo values |
+| AgentMessage (x4-5) | Every run | User input + Gemini outputs |
+| ActionRecommendation | Every run | Gemini recommender agent |
 
 ### Message Roles (in execution order)
 
 | Role | Source | Content |
 |------|--------|---------|
 | `user` | Farmer | Original message text |
-| `tool_call` | Engine | Tool name, input args, output data, duration_ms |
-| `field_agent` | Gemini | JSON field context summary |
-| `orchestrator` | Gemini | JSON action plan |
-| `recommender` | Gemini | JSON recommendation with costs |
-| `final_response` | Engine | Formatted farmer-friendly text |
+| `agent` | Engine | Field context JSON (weather + NDVI + soil gathered) |
+| `agent` | Gemini | Orchestrator plan JSON (primary concern, reasoning) |
+| `agent` | Gemini | Recommender output JSON (action, cost, steps) |
+| `agent` | Engine | Final farmer-friendly text response |
 
 ---
 
@@ -186,16 +204,26 @@ Field (registered crop field)
 ```json
 {
   "session_id": "uuid-string",
-  "response": "Your cotton is showing early drought stress. Irrigate within 24 hours. Estimated cost: $45. Delaying 3+ days risks 12% yield loss.",
+  "response": "Your cotton is showing early drought stress. Irrigate within 24 hours. Estimated cost: $70. Delaying risks 15% yield loss.",
   "recommendation": {
     "action_type": "irrigate",
-    "urgency": "within_24h",
+    "urgency": "immediate",
     "description": "Apply 2.5 inches of water to cotton field",
-    "estimated_cost": 45.0,
-    "risk_if_delayed": "12% yield loss if delayed beyond 3 days"
+    "estimated_cost": 70.0,
+    "risk_if_delayed": "15% yield loss if delayed beyond 48 hours"
   },
-  "total_duration_ms": 3400
+  "total_duration_ms": 20467
 }
+```
+
+**What's also saved to DB** (not in the return, but queryable via endpoints):
+
+| Saved To | Queryable At |
+|----------|-------------|
+| WeatherSnapshot | `GET /fields/<id>/weather/` |
+| CropHealthRecord (if new) | `GET /fields/<id>/crop-health/` |
+| SoilProfile (if new) | `GET /fields/<id>/soil/` |
+| ActionRecommendation (with cost_breakdown, timing_rationale, implementation_steps) | `GET /agent/trace/<session_id>/` → `recommendations[]` |
 ```
 
 This is returned directly by both:
@@ -239,18 +267,30 @@ POST /api/v1/agent/message/      POST /api/v1/webhook/sms/
 |------|---------|
 | `agent/engine.py` | `CropAdvisorEngine` class — orchestrates the 3-agent pipeline |
 | `agent/prompts.py` | System prompts for Field Agent, Orchestrator, Recommender |
-| `agent/models.py` | Field, AgentSession, AgentMessage, ActionRecommendation |
-| `agent/views.py` | API views (message, trace, fields, sessions) |
-| `tools/services.py` | Tool functions (weather, crop health, soil) |
+| `agent/models.py` | Field, WeatherSnapshot, CropHealthRecord, SoilProfile, AgentSession, AgentMessage, ActionRecommendation |
+| `agent/views.py` | API views (message, trace, fields, sessions, weather/crop/soil history) |
+| `agent/serializers.py` | DRF serializers for all models |
+| `tools/services.py` | Tool functions — read/write weather, crop health, soil to DB |
 | `webhooks/views.py` | Twilio SMS webhook handler |
+| `agent/management/commands/seed_demo.py` | Seed demo data for testing |
 
 ---
 
 ## Timing
 
-A typical run takes ~3-5 seconds:
-- Field Agent: ~1-2s (Gemini call + 3 tool executions)
-- Orchestrator: ~0.5-1s (single Gemini call)
-- Recommender: ~0.5-1s (single Gemini call)
+A typical run takes ~10-25 seconds:
+- Field Agent: ~1-2s (data gathering from tools/services.py + DB writes)
+- Orchestrator: ~5-10s (Gemini API call)
+- Recommender: ~5-10s (Gemini API call)
 
-Each step's duration is saved in `AgentMessage.duration_ms` for the trace view.
+---
+
+## Seed Data
+
+Run `python manage.py seed_demo` to populate the DB with:
+- 1 demo user (`demo_farmer` / `demo1234!`)
+- 3 fields with different crops (cotton, citrus, alfalfa)
+- Soil profiles, crop health records, and weather snapshots per field
+
+Add `--run-agent` to also run the Gemini pipeline on the first field.
+Add `--reset` to wipe everything and start fresh.
