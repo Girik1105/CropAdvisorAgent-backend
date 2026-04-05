@@ -183,11 +183,6 @@ SIMPLE_JWT = {
 # Frontend
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
 
-# GCP
-GCP_PROJECT_ID = os.getenv('GCP_PROJECT_ID', '')
-GCP_REGION = os.getenv('GCP_REGION', 'us-central1')
-BASE_URL = os.getenv('BASE_URL', 'http://127.0.0.1:8000')
-
 # API Keys
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 OPENWEATHERMAP_API_KEY = os.getenv('OPENWEATHERMAP_API_KEY', '')
