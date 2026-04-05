@@ -1,10 +1,12 @@
-# CropAdvisor Backend
+# CropAdvisor Agent — Backend
 
 Gemini-powered autonomous agricultural AI agent built for Innovation Hacks 2.0 (Google Track). Farmers text a phone number or use the dashboard and receive specific, costed action plans for their fields — the agent gathers data, reasons, and decides autonomously.
 
+**Frontend:** [CropAdvisorAgent-frontend](https://github.com/Girik1105/CropAdvisorAgent-frontend)
+
 **Demo:** Cotton farmer near Casa Grande, AZ texts "How's my field looking?" → Agent calls 7 tools (live weather, real USDA soil, NASA POWER ET₀, NDVI, market prices, pest risk, growth stage) → Gemini reasons through 3-agent pipeline → Responds: "Your cotton is under drought stress. Irrigate within 24 hours. Cost: $280. Delaying risks 15% yield loss."
 
-**Real data sources:** OpenWeatherMap (live weather), USDA SSURGO (real soil profiles by GPS), NASA POWER (satellite evapotranspiration for water budgets), NDVI vegetation index (pre-fetched from USGS/Landsat).
+**Real data sources:** OpenWeatherMap (live weather), USDA SSURGO (real soil profiles by GPS), NASA POWER (satellite evapotranspiration for water budgets), USDA NASS QuickStats (commodity market prices), NDVI vegetation index (pre-fetched from USGS/Landsat).
 
 ## Quick Start
 
@@ -65,11 +67,15 @@ TWILIO_PHONE_NUMBER=+1xxxxxxxxxx
 
 # ElevenLabs (for voice)
 ELEVENLABS_API_KEY=your-key
+
+# USDA NASS (for real commodity prices — optional, falls back to static)
+USDA_NASS_API_KEY=your-key
 ```
 
 **Where to get keys:**
 - Gemini: [aistudio.google.com](https://aistudio.google.com/) → Get API Key
 - OpenWeatherMap: [openweathermap.org/api](https://openweathermap.org/api) → Sign up → API Keys
+- USDA NASS: [quickstats.nass.usda.gov/api](https://quickstats.nass.usda.gov/api/) → Request API Key
 - Twilio: [console.twilio.com](https://console.twilio.com/) → Account SID + Auth Token
 - ElevenLabs: [elevenlabs.io](https://elevenlabs.io/) → Profile → API Keys
 
@@ -169,7 +175,7 @@ Field Agent (gathers data from 7 tools autonomously)
     ├── get_weather(lat, lng)           → LIVE from OpenWeatherMap API
     ├── get_crop_health(field_id)       → NDVI from DB (real USGS/Landsat source)
     ├── get_soil_profile(field_id)      → REAL from USDA SSURGO API by GPS coords
-    ├── get_market_prices(crop_type)    → Commodity prices (USDA-sourced static)
+    ├── get_market_prices(crop_type)    → REAL from USDA NASS QuickStats API
     ├── get_pest_risk(crop, temp, hum)  → Rule engine using LIVE weather conditions
     ├── get_water_usage(field_id)       → NASA POWER satellite ET₀ + FAO Penman-Monteith
     └── get_growth_stage(crop_type)     → Calendar-based with month-specific guidance
@@ -192,6 +198,19 @@ General QA Agent (answers with field context, no tool calls)
     ↓
 Response (no structured recommendation)
 ```
+
+### Threading & Polling
+
+The full health check pipeline takes ~20s (7 tool calls + 2 Gemini calls). To avoid HTTP timeouts:
+
+1. `POST /agent/message/` creates a session with `status='processing'` and spawns a **daemon thread**
+2. Returns `202 Accepted` immediately with `{ session_id, status: 'processing' }`
+3. Frontend polls `GET /agent/status/<session_id>/` every 2 seconds
+4. When complete, status endpoint returns the full result (response + recommendation)
+
+### Chat Pipeline (lightweight)
+
+`POST /agent/chat/` is a separate lightweight path — single Gemini call using existing DB data (no API calls, no tool pipeline). Used for quick Q&A about a field.
 
 ### Two Entry Points, Same Engine
 
@@ -222,7 +241,7 @@ All models use UUID primary keys and are in `agent/models.py`.
 | **WeatherSnapshot** | Temperature, humidity, wind, precipitation forecast | OpenWeatherMap API (live) | Every agent run |
 | **CropHealthRecord** | NDVI score, stress level, vegetation trend | USGS/Landsat (pre-fetched) | First run (or updated) |
 | **SoilProfile** | pH, drainage, water capacity, organic matter | USDA SSURGO API (real, by GPS) | First run (one-to-one, cached) |
-| **MarketSnapshot** | Commodity price, trend, seasonal outlook | Static (USDA-sourced) | Every agent run |
+| **MarketSnapshot** | Commodity price, trend, seasonal outlook | USDA NASS QuickStats API (real) | Every agent run |
 | **PestRiskAssessment** | Risk level, threats, preventive actions | Rule engine + live weather | Every agent run |
 | **WaterUsageEstimate** | Daily water need, deficit, irrigation cost | NASA POWER ET₀ + FAO Penman-Monteith | Every agent run |
 
@@ -242,8 +261,11 @@ All prefixed with `/api/v1/`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/agent/message/` | Send message, run agent pipeline |
+| POST | `/agent/message/` | Start health check (returns 202, runs in background thread) |
+| GET | `/agent/status/<session_id>/` | Poll for health check completion status |
 | GET | `/agent/trace/<session_id>/` | Full reasoning trace (messages + recommendations) |
+| POST | `/agent/chat/` | Lightweight chat — single Gemini call, no tool pipeline |
+| GET | `/agent/chat/?field_id=<id>` | Chat history (last 10 messages for a field) |
 
 ### Fields (JWT required)
 
@@ -282,7 +304,7 @@ All prefixed with `/api/v1/`.
 | Soil | USDA SSURGO via Soil Data Access API | **Real** — queried by GPS coordinates |
 | Water Budget | NASA POWER + FAO Penman-Monteith ET₀ | **Satellite** — solar radiation, temp, wind, humidity |
 | Crop Health | NDVI vegetation index | Pre-fetched from real USGS/Landsat data |
-| Market Prices | Commodity exchange data | Static (realistic USDA-sourced values) |
+| Market Prices | USDA NASS QuickStats API | **Real** — commodity prices by crop type |
 | Pest Risk | Rule-based engine | Uses **live weather** conditions + crop type |
 | Growth Stage | Crop calendar | Month-specific guidance per crop |
 | SMS | Twilio (webhook → TwiML) | — |
